@@ -30,8 +30,9 @@ impl KeyString for BinUserClient {
             .await;
     }
 
+    // fix: escape the prefix
     async fn keys(&self, p: &Pattern) -> TribResult<List> {
-        let prefix_prefix = (&self.name).to_string() + "::" + &p.prefix;
+        let prefix_prefix = (&self.name).to_string() + "::" + &escape(p.prefix);
 
         let output_list = self
             .bin_storage
@@ -88,7 +89,7 @@ impl KeyList for BinUserClient {
     }
 
     async fn list_keys(&self, p: &Pattern) -> TribResult<List> {
-        let prefix_prefix = (&self.name).to_string() + "::" + &p.prefix;
+        let prefix_prefix = (&self.name).to_string() + "::" + &escape(&p.prefix);
         let output_list = self
             .bin_storage
             .list_keys(&Pattern {
