@@ -39,3 +39,9 @@ impl BinStorage for BinStorageClient {
         return Ok(Box::new(user_storage));
     }
 }
+
+// impl BinStorageClient {
+//     async fn scan(&self, name: &str) -> TribResult<Box<dyn Storage>> {
+    
+//     }
+// }
