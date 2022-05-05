@@ -32,17 +32,19 @@ impl StorageFaultToleranceClient {
                 return Ok(i);
             }
         }
-
         Err(Box::new(TribblerError::Unknown(
             "Get key indexin list error. Some contention happened".to_string(),
         )))
     }
+
     async fn remove_key_value(&self, storage: &StorageClient, kv: &KeyValue) -> TribResult<u32> {
+        // Use MarkedValue structure format for comparing value
         let mut list = match self.get_concat_list(storage, &kv.key).await {
             Ok(list) => list,
             Err(err) => return Err(err),
         };
 
+        // Deduplicate to avoid counting replicated values
         list.sort();
         list.dedup();
 
@@ -86,18 +88,18 @@ impl StorageFaultToleranceClient {
 
         if primary_idx != backup_idx {
             return Ok(ReplicateIndices {
-                primary: primary_idx as usize,
-                backup: Some(backup_idx as usize),
+                primary: live_https[primary_idx as usize],
+                backup: Some(live_https[backup_idx as usize]),
             });
         }
 
         Ok(ReplicateIndices {
-            primary: primary_idx as usize,
+            primary: live_https[primary_idx as usize],
             backup: None,
         })
     }
 
-    // Get the list
+    // Get the list returning to client -> contains only ordered value
     async fn get_processed_list(
         &self,
         storage: &StorageClient,
@@ -122,9 +124,10 @@ impl StorageFaultToleranceClient {
             Ok(list) => list,
             Err(err) => return Err(err),
         };
-        Ok(self.get_conststent_order(concat_list).await)
+        Ok(self.get_consistent_order_value(concat_list).await)
     }
 
+    // The whole list with key and the output as vector of serialized string of MarkedValue structure.
     async fn get_concat_list_string(
         &self,
         storage: &StorageClient,
@@ -168,43 +171,7 @@ impl StorageFaultToleranceClient {
         self.concat_two_list(&prefix_list, &suffix_list)
     }
 
-    fn concat_two_list_string(
-        &self,
-        prefix_list: &Vec<String>,
-        suffix_list: &Vec<String>,
-    ) -> TribResult<Vec<String>> {
-        let mut concat_list = Vec::<String>::new();
-        // Manually for now => optimization
-        if prefix_list.len() == 0 && suffix_list.len() == 0 {
-            return Ok(concat_list);
-        }
-        let first_overlapped: MarkedValue = match suffix_list.len() > 0 {
-            true => serde_json::from_str(&suffix_list[0])?,
-            false => MarkedValue {
-                backend_type: BackendType::NotDefined,
-                backend_id: 0,
-                clock: 0,
-                index: 0,
-                value: "".to_string(),
-            },
-        };
-
-        for item in prefix_list.iter() {
-            let item_info: MarkedValue = serde_json::from_str(item)?;
-            if item_info == first_overlapped {
-                break;
-            }
-            concat_list.push(item.clone().to_string());
-        }
-
-        for item in suffix_list.iter() {
-            //let item_info: MarkedValue = serde_json::from_str(item)?;
-            concat_list.push(item.clone().to_string());
-        }
-
-        Ok(concat_list)
-    }
-
+    // concatinate two lists as MarkedValue struct
     fn concat_two_list(
         &self,
         prefix_list: &Vec<String>,
@@ -243,8 +210,46 @@ impl StorageFaultToleranceClient {
         Ok(concat_list)
     }
 
+    // concatinate two lists into serialized string
+    fn concat_two_list_string(
+        &self,
+        prefix_list: &Vec<String>,
+        suffix_list: &Vec<String>,
+    ) -> TribResult<Vec<String>> {
+        let mut concat_list = Vec::<String>::new();
+        // Manually for now => optimization
+        if prefix_list.len() == 0 && suffix_list.len() == 0 {
+            return Ok(concat_list);
+        }
+        let first_overlapped: MarkedValue = match suffix_list.len() > 0 {
+            true => serde_json::from_str(&suffix_list[0])?,
+            false => MarkedValue {
+                backend_type: BackendType::NotDefined,
+                backend_id: 0,
+                clock: 0,
+                index: 0,
+                value: "".to_string(),
+            },
+        };
+
+        for item in prefix_list.iter() {
+            let item_info: MarkedValue = serde_json::from_str(item)?;
+            if item_info == first_overlapped {
+                break;
+            }
+            concat_list.push(item.clone().to_string());
+        }
+
+        for item in suffix_list.iter() {
+            //let item_info: MarkedValue = serde_json::from_str(item)?;
+            concat_list.push(item.clone().to_string());
+        }
+
+        Ok(concat_list)
+    }
+
     //sorting the list_get list to a consistent list
-    async fn get_conststent_order(&self, mut list: Vec<MarkedValue>) -> Vec<String> {
+    async fn get_consistent_order_value(&self, mut list: Vec<MarkedValue>) -> Vec<String> {
         let list_iter = list.iter_mut();
 
         let mut sublist = Vec::<MarkedValue>::new();
@@ -277,7 +282,14 @@ impl StorageFaultToleranceClient {
             }
         }
 
-        sublist.clear();
+        if sublist.len() > 0 {
+            sublist.sort();
+            sublist.dedup();
+            for v in sublist.into_iter() {
+                sorted_list.push(v.value);
+            }
+        }
+
         return sorted_list;
     }
 }
@@ -392,7 +404,7 @@ impl KeyString for StorageFaultToleranceClient {
 
         match result {
             Ok(List(vec)) => {
-                // Check whether backup contains for keys => the primary has no finished migration
+                // Check whether backup contains keys => if the primary has not finished migration
                 // return backup's result
                 let mut primary_vec = vec;
                 match backend_indices.backup {
@@ -422,7 +434,7 @@ impl KeyString for StorageFaultToleranceClient {
 
         let keys_vec = match result {
             Ok(List(vec)) => vec,
-            // Somehow all the replicates cannot be accessed -> should we deal with this situation
+            // Somehow all the replicates cannot be accessed -> should we deal with this situation?
             // although this might not happen in lab3's cases since one backend crashed at a time
             Err(err) => return Err(err),
         };
@@ -581,7 +593,7 @@ impl KeyList for StorageFaultToleranceClient {
             backend_type: BackendType::Primary,
             backend_id: backend_indices.primary,
             clock: primary_clock,
-            // Do not know the index for primary
+            // Does not know the index for primary
             index: 0,
             value: kv.value.clone(),
         })?;
