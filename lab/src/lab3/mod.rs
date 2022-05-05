@@ -167,3 +167,7 @@
 //! if they feel the need.
 //!
 //! Happy Lab 3. :-)
+//!
+//!
+mod fault_tolerance_client;
+mod storage_structs;
