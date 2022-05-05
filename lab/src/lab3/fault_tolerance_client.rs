@@ -100,7 +100,7 @@ impl StorageFaultToleranceClient {
 
         // Get lower_bound for primary backend and the next backend as backup
         let primary_idx = self.lower_bound_in_list(live_https.deref(), primary_hash as usize);
-        let backup_idx = (primary_idx + 1) % storage_clients_len as usize;
+        let backup_idx = (primary_idx + 1) % live_https.len() as usize;
 
         if primary_idx != backup_idx {
             return Ok(ReplicateIndices {
