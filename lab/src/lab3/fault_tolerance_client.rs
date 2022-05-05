@@ -149,6 +149,7 @@ impl StorageFaultToleranceClient {
 
         self.concat_two_list_string(&prefix_list, &suffix_list)
     }
+
     async fn get_concat_list(
         &self,
         storage: &StorageClient,
@@ -534,17 +535,20 @@ impl KeyList for StorageFaultToleranceClient {
         };
 
         // cases:
-        // 1. primary and backup working
-        // 2. only primary working
-        // 3. only backup working
+        // 1. primary and backup and primary as primary
+        // 2. primary and backup and backup as primary
+        // 3. only primary working
+        // 4. only backup working
 
         // Deciding primary and backup
         match primary_list {
             Ok(p_list) => match backup_list {
                 Ok(f_list) => {
+                    // case 2
                     if p_list.len() < f_list.len() {
                         match backup {
                             Some(ret) => {
+                                // swap primary and backup
                                 let tmp = primary;
                                 primary = &ret;
                                 backup = Some(tmp);
@@ -564,10 +568,12 @@ impl KeyList for StorageFaultToleranceClient {
                         }
                     }
                 }
+                // case 3
                 Err(_) => backup = None,
             },
             Err(_) => {
                 match backup_list {
+                    // case 4
                     Ok(_) => {
                         primary = match backup {
                             Some(storage) => storage,
@@ -578,7 +584,7 @@ impl KeyList for StorageFaultToleranceClient {
                             }
                         };
                     }
-                    // not backend is working => this situation should not happen
+                    // no backend is working => this situation should not happen
                     Err(_) => (),
                 }
             }
@@ -605,11 +611,15 @@ impl KeyList for StorageFaultToleranceClient {
 
         result = primary.list_append(&translated_kv).await;
         let primary_appended_list = self.get_concat_list_string(primary, &kv.key).await?;
+
+        // Get index in the concat list
         let index = self
             .get_key_index_in_list(&primary_appended_list, &primary_value)
             .await?;
+
+        // Add index information for value passed into backup -> for consistent ordering
         let backup_value = serde_json::to_string(&MarkedValue {
-            backend_type: BackendType::Primary,
+            backend_type: BackendType::Backup,
             backend_id: backend_indices.primary,
             clock: primary_clock,
             index: index,
@@ -650,12 +660,13 @@ impl KeyList for StorageFaultToleranceClient {
                 None => (),
             },
             Ok(primary_removed) => {
-                // Remove key value in backup and check whethe it removed more parts -> primary has not finished migration
+                // Remove key value in backup and check whether it removed more in backup -> primary might haven't not finished migration
                 match backend_indices.backup {
                     Some(index) => {
                         let backup = &self.storage_clients[index];
                         match self.remove_key_value(backup, &translated_kv.clone()).await {
                             Ok(backup_removed) => {
+                                // If backend removes more -> use this removed count for return
                                 if backup_removed > primary_removed {
                                     result = Ok(backup_removed);
                                 }
@@ -695,10 +706,11 @@ impl KeyList for StorageFaultToleranceClient {
         //Fault tolerance
         let backend_indices = self.find_target_backends().await?;
 
-        // TODO: Compare list length here
         let mut matched_keys: HashSet<String> = HashSet::new();
         let primary = &self.storage_clients[backend_indices.primary];
 
+        // Insert all the matching keys in primary and backups to hashset
+        // then we don't need to do the comparison since one should be a subset of another or its the same
         match primary.list_keys(&prefix_translated_pattern).await {
             Ok(List(keys)) => {
                 for k in keys.iter() {
@@ -715,6 +727,7 @@ impl KeyList for StorageFaultToleranceClient {
             }
             Err(_) => (),
         }
+
         match backend_indices.backup {
             Some(index) => {
                 let backup = &self.storage_clients[index];
