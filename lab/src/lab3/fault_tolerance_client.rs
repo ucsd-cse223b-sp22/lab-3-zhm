@@ -78,13 +78,13 @@ impl StorageFaultToleranceClient {
 
     // Find the lower_bound
     fn lower_bound_in_list(&self, live_https: &Vec<usize>, num: usize) -> usize {
-        for https in live_https.iter() {
+        for (i, https) in live_https.iter().enumerate() {
             if https >= &num {
-                return https.clone();
+                return i;
             }
         }
 
-        return live_https[0];
+        return 0;
     }
 
     async fn find_target_backends(&self) -> TribResult<ReplicateIndices> {
@@ -97,20 +97,20 @@ impl StorageFaultToleranceClient {
         let live_https = self.live_http_back_addr_idx.read().await;
         let storage_clients_len = self.storage_clients.len();
         let primary_hash = hasher.finish() % storage_clients_len as u64;
-        let backup_hash = (primary_hash + 1) % storage_clients_len as u64;
 
+        // Get lower_bound for primary backend and the next backend as backup
         let primary_idx = self.lower_bound_in_list(live_https.deref(), primary_hash as usize);
-        let backup_idx = self.lower_bound_in_list(live_https.deref(), backup_hash as usize);
+        let backup_idx = (primary_idx + 1) % storage_clients_len as usize;
 
         if primary_idx != backup_idx {
             return Ok(ReplicateIndices {
-                primary: primary_idx,
-                backup: Some(backup_idx),
+                primary: live_https[primary_idx],
+                backup: Some(live_https[backup_idx]),
             });
         }
 
         Ok(ReplicateIndices {
-            primary: primary_idx,
+            primary: live_https[primary_idx],
             backup: None,
         })
     }
@@ -479,7 +479,6 @@ impl KeyList for StorageFaultToleranceClient {
         let backend_indices = self.find_target_backends().await?;
         let primary = &self.storage_clients[backend_indices.primary];
 
-        let primary_list = self.get_processed_list(primary, &translated_key).await;
         let backup_list;
         match backend_indices.backup {
             Some(index) => {
@@ -492,6 +491,7 @@ impl KeyList for StorageFaultToleranceClient {
                 )))
             }
         };
+        let primary_list = self.get_processed_list(primary, &translated_key).await;
 
         // Get list from primary
         match primary_list {
