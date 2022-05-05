@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
+use std::ops::Deref;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tribbler::{
@@ -74,6 +75,18 @@ impl StorageFaultToleranceClient {
         }
         return Ok(removed);
     }
+
+    // Find the lower_bound
+    fn lower_bound_in_list(&self, live_https: &Vec<usize>, num: usize) -> usize {
+        for https in live_https.iter() {
+            if https >= &num {
+                return https.clone();
+            }
+        }
+
+        return live_https[0];
+    }
+
     async fn find_target_backends(&self) -> TribResult<ReplicateIndices> {
         let name = &self.bin_name;
 
@@ -82,19 +95,22 @@ impl StorageFaultToleranceClient {
         name.hash(&mut hasher);
 
         let live_https = self.live_http_back_addr_idx.read().await;
-        let live_https_len = live_https.len();
-        let primary_idx = hasher.finish() % live_https_len as u64;
-        let backup_idx = (primary_idx + 1) % live_https_len as u64;
+        let storage_clients_len = self.storage_clients.len();
+        let primary_hash = hasher.finish() % storage_clients_len as u64;
+        let backup_hash = (primary_hash + 1) % storage_clients_len as u64;
+
+        let primary_idx = self.lower_bound_in_list(live_https.deref(), primary_hash as usize);
+        let backup_idx = self.lower_bound_in_list(live_https.deref(), backup_hash as usize);
 
         if primary_idx != backup_idx {
             return Ok(ReplicateIndices {
-                primary: live_https[primary_idx as usize],
-                backup: Some(live_https[backup_idx as usize]),
+                primary: primary_idx,
+                backup: Some(backup_idx),
             });
         }
 
         Ok(ReplicateIndices {
-            primary: live_https[primary_idx as usize],
+            primary: primary_idx,
             backup: None,
         })
     }
@@ -195,17 +211,29 @@ impl StorageFaultToleranceClient {
             },
         };
 
+        let mut records = HashSet::<String>::new();
+
         for item in prefix_list.iter() {
-            let item_info = serde_json::from_str(item)?;
+            let item_info: MarkedValue = serde_json::from_str(item)?;
+            let unique_id: String =
+                format!("{}::{}", item_info.backend_id, item_info.clock).to_string();
             if item_info == overlapped_first {
                 break;
             }
-            concat_list.push(item_info);
+            if !records.contains(&unique_id) {
+                concat_list.push(item_info);
+                records.insert(unique_id);
+            }
         }
 
         for item in suffix_list.iter() {
-            let item_info = serde_json::from_str(item)?;
-            concat_list.push(item_info);
+            let item_info: MarkedValue = serde_json::from_str(item)?;
+            let unique_id: String =
+                format!("{}::{}", item_info.backend_id, item_info.clock).to_string();
+            if !records.contains(&unique_id) {
+                concat_list.push(item_info);
+                records.insert(unique_id);
+            }
         }
 
         Ok(concat_list)
@@ -233,17 +261,28 @@ impl StorageFaultToleranceClient {
             },
         };
 
+        let mut records = HashSet::<String>::new();
         for item in prefix_list.iter() {
             let item_info: MarkedValue = serde_json::from_str(item)?;
+            let unique_id: String =
+                format!("{}::{}", item_info.backend_id, item_info.clock).to_string();
             if item_info == first_overlapped {
                 break;
             }
-            concat_list.push(item.clone().to_string());
+            if !records.contains(&unique_id) {
+                records.insert(unique_id);
+                concat_list.push(item.clone().to_string());
+            }
         }
 
         for item in suffix_list.iter() {
-            //let item_info: MarkedValue = serde_json::from_str(item)?;
-            concat_list.push(item.clone().to_string());
+            let item_info: MarkedValue = serde_json::from_str(item)?;
+            let unique_id: String =
+                format!("{}::{}", item_info.backend_id, item_info.clock).to_string();
+            if !records.contains(&unique_id) {
+                records.insert(unique_id);
+                concat_list.push(item.clone().to_string());
+            }
         }
 
         Ok(concat_list)
