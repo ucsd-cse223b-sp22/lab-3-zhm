@@ -169,5 +169,8 @@
 //! Happy Lab 3. :-)
 //!
 //!
+//!
+
 mod fault_tolerance_client;
+mod migration;
 mod storage_structs;
