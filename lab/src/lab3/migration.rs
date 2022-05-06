@@ -267,7 +267,6 @@ async fn bin_migration(
     // <vector of migrated keys> -> prevent redundant operations
     migration_log: Vec<String>,
 ) -> TribResult<bool> {
-
     // Copying KeyValue pair
 
     // How keeper record this part? It seems okay to redo all set operation
@@ -300,13 +299,13 @@ async fn bin_migration(
     }
 
     // Copying list
-    
+
     // Keeper sends acknowledgement when receiving both prefix and suffix log
     // Record bin_name::key part to group the operations for the same keys together
-    let mut list_keys_hs = HashSet<String>::new(); 
+    let mut list_keys_hs = HashSet::<String>::new();
 
-    // For stripping PREFIX_ and SUFFIX_  
-    let prefix_len = PREFIX.len(); 
+    // For stripping PREFIX_ and SUFFIX_
+    let prefix_len = PREFIX.len();
 
     // Should be PREFIX_prefix_username::trib, PREFIX_prefix_username::follow_log
     let prefix_list_keys = from
@@ -319,34 +318,33 @@ async fn bin_migration(
     // Should be suffix_username::trib, suffix_username::follow_log
     let suffix_list_keys = from
         .list_keys(&Pattern {
-        prefix: format!("{}{}::", SUFFIX, &bin_name.clone().to_string()),
-        suffix: "".to_string(),
+            prefix: format!("{}{}::", SUFFIX, &bin_name.clone().to_string()),
+            suffix: "".to_string(),
         })
         .await?
         .0;
 
     for key in prefix_list_keys.iter() {
         let untyped_list_key = &key[prefix_len..];
-        list_keys_hs.insert(untyped_list_key);  
+        list_keys_hs.insert(untyped_list_key.to_string());
     }
 
     for key in suffix_list_keys.iter() {
         let untyped_list_key = &key[prefix_len..];
-        list_keys_hs.insert(untyped_list_key);  
+        list_keys_hs.insert(untyped_list_key.to_string());
     }
 
     let list_keys: Vec<String> = list_keys_hs.into_iter().collect();
 
-    let mut migration_log_into_iter = migration_log.into_iter(); 
-    
-    for key in list_keys.iter() {
-        
-        // Skip the key that has been migrated before
-        if migration_log_into_iter.find(|&x| x == key) {
-            continue; 
-        } 
+    let mut migration_log_into_iter = migration_log.into_iter();
 
-        let prefix_key = format!("{}{}", PREFIX, key); 
+    for key in list_keys.iter() {
+        // Skip the key that has been migrated before
+        if !(migration_log_into_iter.find(|x| x == key) == None) {
+            continue;
+        }
+
+        let prefix_key = format!("{}{}", PREFIX, key);
 
         let prefix_key_list = match from.list_get(&prefix_key).await {
             Ok(List(vec)) => vec,
@@ -365,7 +363,7 @@ async fn bin_migration(
             }
         }
 
-        let suffix_key = format!("{}{}", SUFFIX, key); 
+        let suffix_key = format!("{}{}", SUFFIX, key);
         let suffix_key_list = match from.list_get(&suffix_key).await {
             Ok(List(vec)) => vec,
             Err(_) => return Err("Backend crashed when doing migration".into()),
