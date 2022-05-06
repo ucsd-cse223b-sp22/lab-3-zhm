@@ -4,7 +4,6 @@ use async_trait::async_trait;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
-use std::ops::Deref;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tribbler::{
@@ -94,12 +93,16 @@ impl StorageFaultToleranceClient {
         let mut hasher = DefaultHasher::new();
         name.hash(&mut hasher);
 
-        let live_https = self.live_http_back_addr_idx.read().await;
+        let live_https_guard = self.live_http_back_addr_idx.read().await;
+        let mut live_https = (*live_https_guard).clone();
+        drop(live_https_guard);
         let storage_clients_len = self.storage_clients.len();
         let primary_hash = hasher.finish() % storage_clients_len as u64;
 
+        live_https.sort();
+
         // Get lower_bound for primary backend and the next backend as backup
-        let primary_idx = self.lower_bound_in_list(live_https.deref(), primary_hash as usize);
+        let primary_idx = self.lower_bound_in_list(&live_https, primary_hash as usize);
         let backup_idx = (primary_idx + 1) % live_https.len() as usize;
 
         if primary_idx != backup_idx {
