@@ -114,6 +114,7 @@ async fn migration_join(
     new: usize,
     live_https: Vec<usize>,
     storage_clients: Vec<Arc<StorageClient>>,
+    // <bin, vector of migrated keys>
     migration_log: HashMap<String, Vec<String>>,
 ) -> TribResult<bool> {
     let live_https_len = live_https.len();
