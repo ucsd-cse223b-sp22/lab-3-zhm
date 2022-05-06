@@ -696,6 +696,8 @@ impl KeyList for StorageFaultToleranceClient {
 
     /// List all the keys of non-empty lists, where the key matches
     /// the given pattern.
+    ///
+    /// TODO: strips PREFIX_ and SUFFIX
     async fn list_keys(&self, p: &Pattern) -> TribResult<List> {
         let bin_name_and_separator_prefix = format!("{}::", self.bin_name);
         let translated_prefix = format!(

@@ -9,7 +9,7 @@ use tribbler::{
     storage::{KeyList, KeyString, KeyValue, List, Pattern, Storage},
 };
 
-const USER_EXISTS_KEY: &str = "_existing_user_#";
+// const USER_EXISTS_KEY: &str = "_existing_user_#";
 const PREFIX: &str = "PREFIX_";
 const SUFFIX: &str = "SUFFIX_";
 
@@ -18,18 +18,21 @@ pub struct temp {
     pub live_http_back_addr_idx: Arc<RwLock<Vec<usize>>>,
 }
 
+// TODO:
 impl temp {
     async fn fetch_all_users(&self, storage: &StorageClient) -> TribResult<Vec<String>> {
-        match storage
-            .keys(&Pattern {
+        // fetch both keys and list_keys => do it seperately
+        // strips prefix
+        let list = match storage
+            .list_keys(&Pattern {
                 prefix: "".to_string(),
-                suffix: USER_EXISTS_KEY.to_string(),
+                suffix: "".to_string(),
             })
             .await
         {
             Ok(List(vec)) => return Ok(vec),
             Err(_) => return Err("Backend crashed when doing migration".into()),
-        }
+        };
     }
 
     // Find the lower_bound
@@ -69,8 +72,8 @@ impl temp {
         let live_https = self.live_http_back_addr_idx.read().await;
         let live_https_len = live_https.len();
 
-        //let new_node_idx_in_live_https = self.lower_bound_in_list(live_https.deref(), new).await;
-        // let succ =  live_https[(new_node_idx_in_live_https+1) % live_https_len as usize];
+        let new_node_idx_in_live_https = self.lower_bound_in_list(live_https.deref(), new).await;
+        let succ = live_https[(new_node_idx_in_live_https + 1) % live_https_len as usize];
 
         // If there is only one live backend => do nothing
         if live_https_len == 1 {
@@ -79,7 +82,7 @@ impl temp {
 
         // If there are only two backends => copy all data from the old one to another
         if live_https_len == 2 {
-            for user in succ_users.iter() {
+            for bin in succ_bins.iter() {
                 //tokio::spawn(async move {
                 match self
                     .bin_migration(
@@ -94,11 +97,13 @@ impl temp {
                 }
                 //});
             }
+            return Ok(true);
         }
 
         // If there are more than three backends => copy from all the users except the ones between new node and its successor
         for user in succ_users.iter() {
             let idx = self.hash_bin_name_to_backend_idx(user).await?;
+            // TODO: succ might be smaller!!!
             if idx > new && idx <= succ {
                 continue;
             }
@@ -161,6 +166,7 @@ impl temp {
         // Move all the user data who hashed into the range (id of node before predecessor, id of predecessor] to crashed node's successor
         for user in pred_users.iter() {
             let idx = self.hash_bin_name_to_backend_idx(user).await?;
+            // TODO: make into a function to deal with wrap around situation
             if idx > prev_pred && idx <= pred {
                 match self
                     .bin_migration(
