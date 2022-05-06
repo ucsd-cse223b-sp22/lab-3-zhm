@@ -1,6 +1,7 @@
 use crate::lab1::client::StorageClient;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::ops::Deref;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tribbler::{
@@ -58,25 +59,139 @@ impl temp {
     async fn migration_join(
         &self,
         new: usize,
-        // successor
+        // successor id in storage_clients
         succ: usize,
     ) -> TribResult<bool> {
+        let succ_users = match self.fetch_all_users(&self.storage_clients[succ]).await {
+            Ok(vec) => vec,
+            Err(err) => return Err(err),
+        };
+        let live_https = self.live_http_back_addr_idx.read().await;
+        let live_https_len = live_https.len();
 
-        if new == succ {
-            return Ok(True); 
+        //let new_node_idx_in_live_https = self.lower_bound_in_list(live_https.deref(), new).await;
+        // let succ =  live_https[(new_node_idx_in_live_https+1) % live_https_len as usize];
+
+        // If there is only one live backend => do nothing
+        if live_https_len == 1 {
+            return Ok(true);
         }
-        
-        let succ_users = self.fetch_all_users(&self.storage_clients[succ]);
-        let user_list_for_migration = Vec<String>::new(); 
 
-        for user in succ_users.iter() {
-            let idx = self.hash_bin_name_to_backend_idx(user);
-            if idx > new && idx <= succ {
-                continue; 
+        // If there are only two backends => copy all data from the old one to another
+        if live_https_len == 2 {
+            for user in succ_users.iter() {
+                //tokio::spawn(async move {
+                match self
+                    .bin_migration(
+                        user,
+                        &self.storage_clients[succ],
+                        &self.storage_clients[new],
+                    )
+                    .await
+                {
+                    Ok(_) => (),
+                    Err(err) => return Err(err),
+                }
+                //});
             }
-            tokio::spawn(async move {
-                self.bin_migration(user, &self.storage_clients[succ], &self.storage_clients[new]).await
-            }); 
+        }
+
+        // If there are more than three backends => copy from all the users except the ones between new node and its successor
+        for user in succ_users.iter() {
+            let idx = self.hash_bin_name_to_backend_idx(user).await?;
+            if idx > new && idx <= succ {
+                continue;
+            }
+            //tokio::spawn(async move {
+            match self
+                .bin_migration(
+                    user,
+                    &self.storage_clients[succ],
+                    &self.storage_clients[new],
+                )
+                .await
+            {
+                Ok(_) => (),
+                Err(err) => return Err(err),
+            }
+            //});
+        }
+
+        Ok(true)
+    }
+
+    async fn migration_crash(
+        &self,
+        crashed: usize,
+        // before predecesssor id
+        prev_pred: usize,
+        // predecessor id
+        pred: usize,
+        // successor id
+        succ: usize,
+        // next successor id
+        next_succ: usize,
+    ) -> TribResult<bool> {
+        // If we just get crashed node's id
+        // let live_https = self.live_http_back_addr_idx.read().await;
+        // let live_https_len = live_https.len();
+        // let crashed_idx_in_live_https = self.lower_bound_in_list(live_https.dedup(), num).await?;
+        // let succ = live_https[(crashed_idx_in_live_https + 1) % live_https_len as usize];
+        // let succ = live_https[(crashed_idx_in_live_https + 2) % live_https_len as usize];
+        // let pred =
+        //     live_https[(crashed_idx_in_live_https + live_https_len - 1) % live_https_len as usize];
+        // let prev_pred = live_https[(crashed_idx_in_live_https + live_https_len + live_https_len
+        //     - 2)
+        //     % live_https_len as usize];
+
+        // If there is only one node left => no nothing
+        if pred == succ {
+            return Ok(true);
+        }
+
+        let pred_users = match self.fetch_all_users(&self.storage_clients[pred]).await {
+            Ok(vec) => vec,
+            Err(err) => return Err(err),
+        };
+        let succ_users = match self.fetch_all_users(&self.storage_clients[succ]).await {
+            Ok(vec) => vec,
+            Err(err) => return Err(err),
+        };
+
+        // Move all the user data who hashed into the range (id of node before predecessor, id of predecessor] to crashed node's successor
+        for user in pred_users.iter() {
+            let idx = self.hash_bin_name_to_backend_idx(user).await?;
+            if idx > prev_pred && idx <= pred {
+                match self
+                    .bin_migration(
+                        user,
+                        &self.storage_clients[pred],
+                        &self.storage_clients[succ],
+                    )
+                    .await
+                {
+                    Ok(_) => (),
+                    Err(err) => return Err(err),
+                }
+            }
+        }
+
+        // Move all the user data who hashed into the range (id of predecessor, crashed_node] to the node succeed crashed node's successor
+        for user in succ_users.iter() {
+            let idx = self.hash_bin_name_to_backend_idx(user).await?;
+            if idx > pred && idx <= crashed {
+                match self
+                    .bin_migration(
+                        user,
+                        &self.storage_clients[succ],
+                        &self.storage_clients[next_succ],
+                    )
+                    .await
+                {
+                    Ok(_) => (),
+                    Err(err) => return Err(err),
+                }
+            }
         }
 
         Ok(true)
@@ -93,7 +208,7 @@ impl temp {
         // However, it seems not that efficient
         let keys = from
             .keys(&Pattern {
-                prefix: bin_name.clone(),
+                prefix: bin_name.clone().to_string(),
                 suffix: "".to_string(),
             })
             .await?
