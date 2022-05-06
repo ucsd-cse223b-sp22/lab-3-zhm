@@ -134,7 +134,7 @@ async fn migration_join(
     for bin in succ_bins.iter() {
         let idx = hash_bin_name_to_backend_idx(&bin, &live_https, storage_clients.len()).await?;
         // Add wrap around check
-        if check_in_bound_wrap_around(new, succ, idx) {
+        if check_in_bound_wrap_around_inclusive((new + 1) % storage_clients.len(), succ, idx) {
             continue;
         }
         //tokio::spawn(async move {
@@ -155,15 +155,15 @@ async fn migration_join(
     Ok(true)
 }
 
-fn check_in_bound_wrap_around(left: usize, right: usize, target: usize) -> bool {
+fn check_in_bound_wrap_around_inclusive(left: usize, right: usize, target: usize) -> bool {
     if left > right {
-        if target >= right || target < left {
+        if target <= right || target >= left {
             return true;
         } else {
             return false;
         }
     } else {
-        if target > left && target <= right {
+        if target >= left && target <= right {
             return true;
         } else {
             return true;
@@ -203,7 +203,8 @@ async fn migration_crash(
     // Move all the data in bin which is hashed into the range (id of node before predecessor, id of predecessor] to crashed node's successor
     for bin in pred_bins.iter() {
         let idx = hash_bin_name_to_backend_idx(bin, &live_https, storage_clients.len()).await?;
-        if check_in_bound_wrap_around(prev_pred, pred, idx) {
+        if check_in_bound_wrap_around_inclusive((prev_pred + 1) % storage_clients.len(), pred, idx)
+        {
             match bin_migration(
                 bin,
                 storage_clients[pred].clone(),
@@ -221,7 +222,7 @@ async fn migration_crash(
     // Move all the data in bin which is hashed into the range (id of predecessor, crashed_node] to the node succeed crashed node's successor
     for bin in succ_bins.iter() {
         let idx = hash_bin_name_to_backend_idx(bin, &live_https, storage_clients.len()).await?;
-        if check_in_bound_wrap_around(pred, crashed, idx) {
+        if check_in_bound_wrap_around_inclusive((pred + 1) % storage_clients.len(), crashed, idx) {
             match bin_migration(
                 bin,
                 storage_clients[succ].clone(),
@@ -275,6 +276,7 @@ async fn bin_migration(
             Ok(_) => (),
             Err(_) => return Err("Backend crashed when doing migration".into()),
         }
+        // send_key(regulary_key_tag, key)
     }
 
     // Copying list
@@ -323,8 +325,8 @@ async fn bin_migration(
             continue;
         }
 
+        // Append all entries from prefix list and suffix list to prefix list of the backend we're copying to
         let prefix_key = format!("{}{}", PREFIX, key);
-
         let prefix_key_list = match from.list_get(&prefix_key).await {
             Ok(List(vec)) => vec,
             Err(_) => return Err("Backend crashed when doing migration".into()),
@@ -332,7 +334,7 @@ async fn bin_migration(
         for item in prefix_key_list.iter() {
             match to
                 .list_append(&KeyValue {
-                    key: prefix_key.clone(),
+                    key: format!("{}{}", PREFIX, key),
                     value: item.clone(),
                 })
                 .await
@@ -350,7 +352,7 @@ async fn bin_migration(
         for item in suffix_key_list.iter() {
             match to
                 .list_append(&KeyValue {
-                    key: suffix_key.clone(),
+                    key: format!("{}{}", PREFIX, key),
                     value: item.clone(),
                 })
                 .await
@@ -360,7 +362,7 @@ async fn bin_migration(
             }
         }
         // Keeper sends keys to other keeper to acknowledge they finished copying this list
-        // send_key(key);
+        // send_key(list_key_tag, key)
     }
 
     Ok(true)
