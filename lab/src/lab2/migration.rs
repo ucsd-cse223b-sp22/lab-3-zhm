@@ -177,7 +177,7 @@ fn check_in_bound_wrap_around_inclusive(left: usize, right: usize, target: usize
         if target >= left && target <= right {
             return true;
         } else {
-            return true;
+            return false;
         }
     }
 }
