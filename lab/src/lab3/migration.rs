@@ -336,11 +336,11 @@ async fn bin_migration(
 
     let list_keys: Vec<String> = list_keys_hs.into_iter().collect();
 
-    let mut migration_log_into_iter = migration_log.into_iter();
+    let mut migration_log_into_iter = migration_log.iter();
 
     for key in list_keys.iter() {
         // Skip the key that has been migrated before
-        if !(migration_log_into_iter.find(|x| x == key) == None) {
+        if !(migration_log_into_iter.find(|&x| x == key) == None) {
             continue;
         }
 
