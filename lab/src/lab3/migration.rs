@@ -1,6 +1,9 @@
 use crate::lab1::client::StorageClient;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
+use std::env::consts::DLL_SUFFIX;
 use std::hash::{Hash, Hasher};
+use std::iter::successors;
 use std::ops::Deref;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -20,19 +23,53 @@ pub struct temp {
 
 // TODO:
 impl temp {
-    async fn fetch_all_users(&self, storage: &StorageClient) -> TribResult<Vec<String>> {
+    async fn fetch_all_bins(&self, storage: &StorageClient) -> TribResult<Vec<String>> {
         // fetch both keys and list_keys => do it seperately
         // strips prefix
-        let list = match storage
+        let all_keys = match storage
+            .keys(&Pattern {
+                prefix: "".to_string(),
+                suffix: "".to_string(),
+            })
+            .await
+        {
+            Ok(List(vec)) => vec,
+            Err(_) => return Err("Backend crashed when doing migration".into()),
+        };
+
+        let mut records = HashSet::<String>::new();
+
+        for key in all_keys.iter() {
+            // key format, bin_name::key
+            // split string and try to get only the bin_name part
+            let key_split: Vec<&str> = key.split("::").collect();
+            records.insert(key_split[0].to_string());
+        }
+
+        let all_list_keys = match storage
             .list_keys(&Pattern {
                 prefix: "".to_string(),
                 suffix: "".to_string(),
             })
             .await
         {
-            Ok(List(vec)) => return Ok(vec),
-            Err(_) => return Err("Backend crashed when doing migration".into()),
+            Ok(List(vec)) => vec,
+            Err(_) => return Err("Backend crashed when gdoing migratino".into()),
         };
+
+        // PREFFIX & SUFFIX as the same length
+        // truncated type part from key
+        let prefix_len = PREFIX.len();
+
+        for key in all_list_keys.iter() {
+            let untyped_key = &key[prefix_len..];
+            let key_split: Vec<&str> = untyped_key.split("::").collect();
+            records.insert(key_split[0].to_string());
+        }
+
+        let keys_vec: Vec<String> = records.into_iter().collect();
+
+        Ok(keys_vec)
     }
 
     // Find the lower_bound
@@ -59,21 +96,17 @@ impl temp {
         Ok(live_https[primary_idx])
     }
 
-    async fn migration_join(
-        &self,
-        new: usize,
-        // successor id in storage_clients
-        succ: usize,
-    ) -> TribResult<bool> {
-        let succ_users = match self.fetch_all_users(&self.storage_clients[succ]).await {
-            Ok(vec) => vec,
-            Err(err) => return Err(err),
-        };
+    async fn migration_join(&self, new: usize) -> TribResult<bool> {
         let live_https = self.live_http_back_addr_idx.read().await;
         let live_https_len = live_https.len();
 
-        let new_node_idx_in_live_https = self.lower_bound_in_list(live_https.deref(), new).await;
+        let new_node_idx_in_live_https = self.lower_bound_in_list(live_https.deref(), new);
         let succ = live_https[(new_node_idx_in_live_https + 1) % live_https_len as usize];
+
+        let succ_bins = match self.fetch_all_bins(&self.storage_clients[succ]).await {
+            Ok(vec) => vec,
+            Err(err) => return Err(err),
+        };
 
         // If there is only one live backend => do nothing
         if live_https_len == 1 {
@@ -86,7 +119,7 @@ impl temp {
                 //tokio::spawn(async move {
                 match self
                     .bin_migration(
-                        user,
+                        &bin,
                         &self.storage_clients[succ],
                         &self.storage_clients[new],
                     )
@@ -101,19 +134,15 @@ impl temp {
         }
 
         // If there are more than three backends => copy from all the users except the ones between new node and its successor
-        for user in succ_users.iter() {
-            let idx = self.hash_bin_name_to_backend_idx(user).await?;
-            // TODO: succ might be smaller!!!
-            if idx > new && idx <= succ {
+        for bin in succ_bins.iter() {
+            let idx = self.hash_bin_name_to_backend_idx(&bin).await?;
+            // Add wrap around check
+            if self.check_in_bound_wrap_around(new, succ, idx) {
                 continue;
             }
             //tokio::spawn(async move {
             match self
-                .bin_migration(
-                    user,
-                    &self.storage_clients[succ],
-                    &self.storage_clients[new],
-                )
+                .bin_migration(bin, &self.storage_clients[succ], &self.storage_clients[new])
                 .await
             {
                 Ok(_) => (),
@@ -125,52 +154,54 @@ impl temp {
         Ok(true)
     }
 
-    async fn migration_crash(
-        &self,
-        crashed: usize,
-        // before predecesssor id
-        prev_pred: usize,
-        // predecessor id
-        pred: usize,
-        // successor id
-        succ: usize,
-        // next successor id
-        next_succ: usize,
-    ) -> TribResult<bool> {
-        // If we just get crashed node's id
-        // let live_https = self.live_http_back_addr_idx.read().await;
-        // let live_https_len = live_https.len();
-        // let crashed_idx_in_live_https = self.lower_bound_in_list(live_https.dedup(), num).await?;
-        // let succ = live_https[(crashed_idx_in_live_https + 1) % live_https_len as usize];
-        // let succ = live_https[(crashed_idx_in_live_https + 2) % live_https_len as usize];
-        // let pred =
-        //     live_https[(crashed_idx_in_live_https + live_https_len - 1) % live_https_len as usize];
-        // let prev_pred = live_https[(crashed_idx_in_live_https + live_https_len + live_https_len
-        //     - 2)
-        //     % live_https_len as usize];
+    fn check_in_bound_wrap_around(&self, left: usize, right: usize, target: usize) -> bool {
+        if left > right {
+            if target >= right || target < left {
+                return true;
+            } else {
+                return false;
+            }
+        } else {
+            if target > left && target <= right {
+                return true;
+            } else {
+                return true;
+            }
+        }
+    }
+
+    async fn migration_crash(&self, crashed: usize) -> TribResult<bool> {
+        let live_https = self.live_http_back_addr_idx.read().await;
+        let live_https_len = live_https.len();
+        let succ_idx_in_live_https = self.lower_bound_in_list(live_https.deref(), crashed);
+        let succ = live_https[succ_idx_in_live_https];
+        let next_succ = live_https[(succ_idx_in_live_https + 1) % live_https_len as usize];
+        let pred =
+            live_https[(succ_idx_in_live_https + live_https_len - 1) % live_https_len as usize];
+        let prev_pred = live_https[(succ_idx_in_live_https + live_https_len + live_https_len - 2)
+            % live_https_len as usize];
 
         // If there is only one node left => no nothing
         if pred == succ {
             return Ok(true);
         }
 
-        let pred_users = match self.fetch_all_users(&self.storage_clients[pred]).await {
+        let pred_bins = match self.fetch_all_bins(&self.storage_clients[pred]).await {
             Ok(vec) => vec,
             Err(err) => return Err(err),
         };
-        let succ_users = match self.fetch_all_users(&self.storage_clients[succ]).await {
+        let succ_bins = match self.fetch_all_bins(&self.storage_clients[succ]).await {
             Ok(vec) => vec,
             Err(err) => return Err(err),
         };
 
         // Move all the user data who hashed into the range (id of node before predecessor, id of predecessor] to crashed node's successor
-        for user in pred_users.iter() {
-            let idx = self.hash_bin_name_to_backend_idx(user).await?;
-            // TODO: make into a function to deal with wrap around situation
-            if idx > prev_pred && idx <= pred {
+        for bin in pred_bins.iter() {
+            let idx = self.hash_bin_name_to_backend_idx(bin).await?;
+            if self.check_in_bound_wrap_around(prev_pred, pred, idx) {
                 match self
                     .bin_migration(
-                        user,
+                        bin,
                         &self.storage_clients[pred],
                         &self.storage_clients[succ],
                     )
@@ -183,12 +214,12 @@ impl temp {
         }
 
         // Move all the user data who hashed into the range (id of predecessor, crashed_node] to the node succeed crashed node's successor
-        for user in succ_users.iter() {
-            let idx = self.hash_bin_name_to_backend_idx(user).await?;
-            if idx > pred && idx <= crashed {
+        for bin in succ_bins.iter() {
+            let idx = self.hash_bin_name_to_backend_idx(bin).await?;
+            if self.check_in_bound_wrap_around(pred, crashed, idx) {
                 match self
                     .bin_migration(
-                        user,
+                        bin,
                         &self.storage_clients[succ],
                         &self.storage_clients[next_succ],
                     )
