@@ -93,7 +93,7 @@ async fn migration_join(
     live_https: Vec<usize>,
     storage_clients: Vec<Arc<StorageClient>>,
     // <bin, vector of migrated keys> -> prevent redundant operations
-    migration_log: HashMap<String, Vec<String>>,
+    migration_log: Option<HashMap<String, Vec<String>>>,
 ) -> TribResult<bool> {
     let live_https_len = live_https.len();
 
@@ -176,7 +176,7 @@ async fn migration_crash(
     live_https: Vec<usize>,
     storage_clients: Vec<Arc<StorageClient>>,
     // <bin, vector of migrated keys> -> prevent redundant operations
-    migration_log: HashMap<String, Vec<String>>,
+    migration_log: Option<HashMap<String, Vec<String>>>,
 ) -> TribResult<bool> {
     let live_https_len = live_https.len();
     let succ_idx_in_live_https = lower_bound_in_list(&live_https, crashed);
@@ -372,7 +372,7 @@ pub async fn migration_event(
     back_event: &BackendEvent,
     live_https: Vec<usize>,
     storage_clients: Vec<Arc<StorageClient>>,
-    migration_log: HashMap<String, Vec<String>>,
+    migration_log: Option<HashMap<String, Vec<String>>>,
 ) -> TribResult<bool> {
     if back_event.event_type == BackendEventType::Join {
         return migration_join(
