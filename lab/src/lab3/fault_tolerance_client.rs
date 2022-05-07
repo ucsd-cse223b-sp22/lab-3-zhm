@@ -15,6 +15,7 @@ use tribbler::{
 const PREFIX: &str = "PREFIX_";
 const SUFFIX: &str = "SUFFIX_";
 
+#[derive(Debug)]
 pub struct ReplicateIndices {
     pub primary: usize,
     pub backup: Option<usize>,
@@ -100,6 +101,7 @@ impl StorageFaultToleranceClient {
         let primary_hash = hasher.finish() % storage_clients_len as u64;
 
         live_https.sort();
+        //println!("Live https: {:?}", live_https);
 
         // Get lower_bound for primary backend and the next backend as backup
         let primary_idx = self.lower_bound_in_list(&live_https, primary_hash as usize);
@@ -522,17 +524,23 @@ impl KeyList for StorageFaultToleranceClient {
 
     /// Append a string to the list. return true when no error.
     async fn list_append(&self, kv: &KeyValue) -> TribResult<bool> {
+        //println!("List append {:?}", kv);
         let escaped_key = colon::escape(&kv.key);
         let translated_key = format!("{}::{}", self.bin_name, escaped_key);
         let typed_translated_key = format!("{}{}", SUFFIX, translated_key);
         // Fault tolerance
         let mut backend_indices = self.find_target_backends().await?;
 
+        //println!("backend_indices: {:?}", backend_indices);
+
         let primary_value: String;
         let mut translated_kv: KeyValue;
 
         let mut primary = &self.storage_clients[backend_indices.primary];
-        let mut backup: Option<&StorageClient> = None;
+        let mut backup: Option<&StorageClient> = match backend_indices.backup {
+            Some(idx) => Some(&self.storage_clients[idx]),
+            None => None,
+        };
 
         let backup_list;
         match backend_indices.backup {
@@ -644,6 +652,7 @@ impl KeyList for StorageFaultToleranceClient {
 
         match backup {
             Some(backup_storage) => {
+                //println!("Append to backup {:?}", backup_value);
                 translated_kv.value = backup_value;
                 _ = backup_storage.list_append(&translated_kv).await;
             }
@@ -730,6 +739,7 @@ impl KeyList for StorageFaultToleranceClient {
         // then we don't need to do the comparison since one should be a subset of another or they are the same
         match primary.list_keys(&prefix_translated_pattern).await {
             Ok(List(keys)) => {
+                //println!("list_keys primary prefix_list len: {:?}", keys.len());
                 for k in keys.iter() {
                     let key_split: Vec<&str> = k.split(PREFIX).collect();
                     matched_keys.insert(key_split[1].to_string());
@@ -739,6 +749,7 @@ impl KeyList for StorageFaultToleranceClient {
         }
         match primary.list_keys(&suffix_translated_pattern).await {
             Ok(List(keys)) => {
+                //println!("list_keys primary suffix_list len: {:?}", keys.len());
                 for k in keys.iter() {
                     let key_split: Vec<&str> = k.split(SUFFIX).collect();
                     matched_keys.insert(key_split[1].to_string());
@@ -747,11 +758,14 @@ impl KeyList for StorageFaultToleranceClient {
             Err(_) => (),
         }
 
+        //println!("[DEBUGGING] Backend_indices: {:?}", backend_indices);
+
         match backend_indices.backup {
             Some(index) => {
                 let backup = &self.storage_clients[index];
                 match backup.list_keys(&prefix_translated_pattern).await {
                     Ok(List(keys)) => {
+                        //println!("list_keys backup prefix_list len: {:?}", keys.len());
                         for k in keys.iter() {
                             let key_split: Vec<&str> = k.split(PREFIX).collect();
                             matched_keys.insert(key_split[1].to_string());
@@ -761,6 +775,7 @@ impl KeyList for StorageFaultToleranceClient {
                 }
                 match backup.list_keys(&suffix_translated_pattern).await {
                     Ok(List(keys)) => {
+                        //println!("list_keys backup suffix_list len: {:?}", keys.len());
                         for k in keys.iter() {
                             let key_split: Vec<&str> = k.split(SUFFIX).collect();
                             matched_keys.insert(key_split[1].to_string());
@@ -786,6 +801,8 @@ impl KeyList for StorageFaultToleranceClient {
                 )
             })
             .collect();
+
+        //println!("prefix_stripped_keys: {:?}", prefix_stripped_keys);
         Ok(List(prefix_stripped_keys))
     }
 }
