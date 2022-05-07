@@ -263,7 +263,7 @@ impl KeeperServer {
                 let global_max_clock = *keeper_clock_lock;
                 drop(keeper_clock_lock);
 
-                // println!("[DEBUGGING] keeper_server's periodic_scan_and_sync: Before syncing clock(global_max_clock = {}) on backends", global_max_clock);
+                println!("[DEBUGGING] keeper_server's periodic_scan_and_sync: Before syncing clock(global_max_clock = {}) on backends", global_max_clock);
 
                 let (cur_live_back_indices, global_max_clock) = Self::single_scan_and_sync(
                     storage_clients_clones,
@@ -776,6 +776,7 @@ impl KeeperServer {
         // Rertrieve the clients that need to be scanned
         let mut cur_back_idx = scan_range_start;
         loop {
+            println!("cur back idx {:?}", cur_back_idx);
             storage_clients_in_range.push(Arc::clone(&storage_clients[cur_back_idx]));
             // Break once idx at scan_range_end has been processed
             if cur_back_idx == scan_range_end {
@@ -804,14 +805,18 @@ impl KeeperServer {
             // If connection successful, then server is live
             match task.await? {
                 Ok(clock_val) => {
+                    println!("ok {:?}", clock_val);
                     global_max_clock = std::cmp::max(global_max_clock, clock_val);
                     cur_live_back_indices.push(cur_back_idx);
                 }
-                Err(_) => (),
+                Err(err) => {
+                    println!("err {:?}", err);
+                }
             }
             // Wrap around
             cur_back_idx = (cur_back_idx + 1) % storage_clients.len();
         }
+        println!("what's up");
 
         Ok((cur_live_back_indices, global_max_clock))
     }
