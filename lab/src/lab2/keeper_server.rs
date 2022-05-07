@@ -33,14 +33,14 @@ pub struct LiveBackendsView {
     pub live_backend_indices_in_range: Vec<usize>,
 }
 
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub enum BackendEventType {
     Join,
     Leave,
     None, // Only for RPC to save type.
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BackendEvent {
     pub event_type: BackendEventType,
     pub back_idx: usize,
@@ -56,7 +56,7 @@ pub struct LogEntry {
 
 impl Eq for LogEntry {}
 
-#[derive(PartialEq, Clone, Hash)]
+#[derive(PartialEq, Clone, Hash, Debug)]
 pub struct DoneEntry {
     pub key: String,
     pub key_type: String,
@@ -263,7 +263,7 @@ impl KeeperServer {
                 let global_max_clock = *keeper_clock_lock;
                 drop(keeper_clock_lock);
 
-                println!("[DEBUGGING] keeper_server's periodic_scan_and_sync: Before syncing clock(global_max_clock = {}) on backends", global_max_clock);
+                // println!("[DEBUGGING] keeper_server's periodic_scan_and_sync: Before syncing clock(global_max_clock = {}) on backends", global_max_clock);
 
                 let (cur_live_back_indices, global_max_clock) = Self::single_scan_and_sync(
                     storage_clients_clones,
@@ -271,10 +271,10 @@ impl KeeperServer {
                     global_max_clock,
                 )
                 .await?;
-                println!(
-                    "[DEBUGGING] keeper_server's periodic_scan: live_addrs.len(): {}",
-                    cur_live_back_indices.len()
-                );
+                // println!(
+                //     "[DEBUGGING] bin_client's periodic_scan: live_addrs.len(): {}",
+                //     cur_live_back_indices.len()
+                // );
 
                 // Update clock reference of keeper
                 let mut k_clock = keeper_clock.write().await;
@@ -510,6 +510,8 @@ impl KeeperServer {
                             .await
                         });
 
+                        println!("\n[DEBUGGING] ----------Regular migration WATING 5 SECONDS before starting!-----------\n");
+
                         tokio::time::sleep(KEEPER_WAIT_UPON_EVENT_DETECTION_INTERVAL).await;
 
                         // Note double chaining
@@ -544,14 +546,18 @@ impl KeeperServer {
                             };
                         }
 
+                        println!("\n[DEBUGGING] ----------Regular migration started!-----------\n");
+                        println!("event is: {:?}", &event);
+                        println!("live_https is: {:?}", &all_live_back_indices);
+
                         // TODO call migration event passing in all_live_back_indices, event, and storage_clients_clones
                         match migration_event(
                             &event,
                             all_live_back_indices,
                             storage_clients_clones,
                             None,
-                            // global_max_clock,
-                            // successor_keeper_client,
+                            global_max_clock,
+                            successor_keeper_client,
                         )
                         .await
                         {
@@ -600,7 +606,7 @@ impl KeeperServer {
                 // Clone clients since later moving into async for tokio spawn async execution.
                 let storage_clients_clones = clients_for_scanning.clone();
 
-                println!("[DEBUGGING] keeper_server's predecessor scan: Before syncing clock(global_max_clock = {}) on backends", global_max_clock);
+                // println!("[DEBUGGING] keeper_server's predecessor scan: Before syncing clock(global_max_clock = {}) on backends", global_max_clock);
 
                 let (cur_live_back_indices, clock_max_res) = Self::single_scan_and_sync(
                     storage_clients_clones,
@@ -889,9 +895,12 @@ impl KeeperServer {
         drop(ready_sender_opt);
 
         // TESTING
-        let range = latest_monitoring_range_inclusive.read().await;
-        println!("Keeper {}'s range is: {:?}", this, range);
+        let range = latest_monitoring_range_inclusive.write().await;
+        println!("Our range is: {:?} and our index is: {:?}", range, this);
         drop(range);
+        let pre_range = predecessor_monitoring_range_inclusive.read().await;
+        println!("Pre range is: {:?} and our index is: {:?}", pre_range, this);
+        drop(pre_range);
 
         let live_backends_view_clone = live_backends_view.clone();
         let storage_clients_clone = storage_clients.clone();
@@ -1164,19 +1173,21 @@ impl KeeperServer {
         drop(end_positions_lock);
 
         println!(
-            "[DEBUGGING] update_ranges: end_positions are {:?}",
-            end_positions
+            "[DEBUGGING] update_ranges: keeper {}'s end_positions are {:?}",
+            this, end_positions
         );
 
         let statuses_lock = statuses.read().await;
         let statuses = statuses_lock.clone();
         drop(statuses_lock);
 
-        println!("[DEBUGGING] update_ranges: stasuses are {:?}", statuses);
+        println!(
+            "[DEBUGGING] update_ranges: keeper {}'s statuses are {:?}",
+            this, statuses
+        );
 
         // get end positions of alive keepers
         let mut alive_vector = Vec::<u64>::new();
-
         for idx in 0..keeper_addrs.len() {
             if statuses[idx] {
                 alive_vector.push(end_positions[idx]);
@@ -1207,9 +1218,6 @@ impl KeeperServer {
                     } else if end_position >= back_num as u64 {
                         *latest_monitoring_range_inclusive =
                             Some((start_position as usize, back_num - 1));
-                    } else {
-                        *latest_monitoring_range_inclusive =
-                            Some((start_position as usize, end_position as usize));
                     }
 
                     let pre_start_position =
@@ -1217,7 +1225,7 @@ impl KeeperServer {
                     let pre_end_position = (start_position + MAX_BACKEND_NUM - 1) % MAX_BACKEND_NUM;
                     if pre_start_position >= back_num as u64
                         && pre_end_position >= back_num as u64
-                        && start_position <= end_position
+                        && pre_start_position <= pre_end_position
                     {
                         *predecessor_monitoring_range_inclusive = None
                     } else if pre_start_position >= back_num as u64 {
@@ -1226,14 +1234,10 @@ impl KeeperServer {
                     } else if pre_end_position >= back_num as u64 {
                         *predecessor_monitoring_range_inclusive =
                             Some((pre_start_position as usize, back_num - 1));
-                    } else {
-                        *predecessor_monitoring_range_inclusive =
-                            Some((pre_start_position as usize, pre_end_position as usize));
                     }
                 }
             }
         }
-        // Important to drop in reverse order as acquire?
         drop(latest_monitoring_range_inclusive);
         drop(predecessor_monitoring_range_inclusive);
         Ok(())
@@ -1299,6 +1303,7 @@ impl KeeperServer {
             }
             current_time = Instant::now(); // reset current time
         }
+
         // update the range
         let _update_result = Self::update_ranges(
             keeper_addrs.clone(),
@@ -1580,14 +1585,19 @@ impl KeeperServer {
         let last_keeper_clock = *keeper_clock_lock;
         drop(keeper_clock_lock);
 
+        println!("\n[DEBUGGING] ----------Take over migration started!-----------\n");
+        println!("event is: {:?}", &back_ev);
+        println!("live_https is: {:?}", &all_live_back_indices);
+        println!("done_keys is: {:?}", &done_keys);
+
         // TODO Call migration using storage_client_clones, all_live_back_indices, last_keeper_clock, successor_keeper_client, back_ev
         match migration_event(
             &back_ev,
             all_live_back_indices,
             clients_for_scanning.clone(),
             Some(done_keys),
-            // last_keeper_clock,
-            // successor_keeper_client,
+            last_keeper_clock,
+            successor_keeper_client,
         )
         .await
         {
