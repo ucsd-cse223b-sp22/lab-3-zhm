@@ -1190,34 +1190,44 @@ impl KeeperServer {
                 if alive_vector[idx as usize] == end_positions[this] {
                     let start_idx = ((idx as i32 - 1) + alive_num) % alive_num;
                     let pre_start_idx = ((idx as i32 - 2) + alive_num) % alive_num;
-                    let start_position = (alive_vector[start_idx as usize] + 1) % MAX_BACKEND_NUM;
-                    let end_position = end_positions[this];
+                    let mut start_position =
+                        (alive_vector[start_idx as usize] + 1) % MAX_BACKEND_NUM;
+                    let mut end_position = end_positions[this];
+
                     if start_position >= back_num as u64
                         && end_position >= back_num as u64
                         && start_position <= end_position
                     {
                         *latest_monitoring_range_inclusive = None;
-                    } else if start_position >= back_num as u64 {
-                        *latest_monitoring_range_inclusive = Some((0, end_position as usize));
-                    } else if end_position >= back_num as u64 {
+                    } else {
+                        if start_position >= back_num as u64 {
+                            start_position = 0;
+                        }
+                        if end_position >= back_num as u64 {
+                            end_position = (back_num - 1) as u64;
+                        }
                         *latest_monitoring_range_inclusive =
-                            Some((start_position as usize, back_num - 1));
+                            Some((start_position as usize, end_position as usize));
                     }
 
-                    let pre_start_position =
+                    let mut pre_start_position =
                         (alive_vector[pre_start_idx as usize] + 1) % MAX_BACKEND_NUM;
-                    let pre_end_position = (start_position + MAX_BACKEND_NUM - 1) % MAX_BACKEND_NUM;
+                    let mut pre_end_position =
+                        (start_position + MAX_BACKEND_NUM - 1) % MAX_BACKEND_NUM;
                     if pre_start_position >= back_num as u64
                         && pre_end_position >= back_num as u64
                         && pre_start_position <= pre_end_position
                     {
                         *predecessor_monitoring_range_inclusive = None
-                    } else if pre_start_position >= back_num as u64 {
+                    } else {
+                        if pre_start_position >= back_num as u64 {
+                            pre_start_position = 0;
+                        }
+                        if pre_end_position >= back_num as u64 {
+                            pre_end_position = (back_num - 1) as u64;
+                        }
                         *predecessor_monitoring_range_inclusive =
-                            Some((0, pre_end_position as usize));
-                    } else if pre_end_position >= back_num as u64 {
-                        *predecessor_monitoring_range_inclusive =
-                            Some((pre_start_position as usize, back_num - 1));
+                            Some((pre_start_position as usize, pre_end_position as usize));
                     }
                 }
             }
@@ -1360,6 +1370,7 @@ impl KeeperServer {
                 }
             }
         }
+
         // finish initialization
         let mut initializing = initializing.write().await;
         *initializing = false;
